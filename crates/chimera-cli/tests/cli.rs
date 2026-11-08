@@ -461,3 +461,23 @@ fn speak_writes_a_clip_and_prints_its_word_timings_and_mouth_track() {
     assert_eq!(track.len() * 480, samples, "one shape per 1/100 s");
     assert!(track.contains('4'), "the f of five puts the lip on the teeth: {track}");
 }
+
+#[test]
+fn speak_runs_away_from_the_checkout_and_carries_the_dictionary_notice() {
+    // a copy of the binary in a directory of its own, run from there: the dictionary is built in
+    let dir = tmp("moved-binary");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = format!("{dir}/chimera");
+    std::fs::copy(env!("CARGO_BIN_EXE_chimera"), &bin).unwrap();
+    let out = Command::new(&bin)
+        .args(["speak", "line.wav", "--text", "Hello there."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(summary["words"].as_array().unwrap().len(), 2);
+
+    let licenses = chimera(&["licenses"]);
+    assert!(licenses.contains("Carnegie Mellon University") && licenses.contains("Redistributions in binary form"), "{licenses}");
+}

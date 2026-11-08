@@ -39,6 +39,13 @@ cargo run --release -p chimera-cli -- render speech|text|song|notes|beatbox|crea
 cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, bandwidths, pitch
 cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
 cargo run --release -p chimera-cli -- speak out.wav --text "Hello there."   # + JSON: word timings, mouth shapes at 100 Hz
+```
+
+`cargo install --path crates/chimera-cli` puts `chimera` on your PATH; the pronunciation
+dictionary is built into the binary, so it runs from anywhere (`chimera licenses` prints the
+notice that comes with it). Weft's `weft voice synth --provider chimera` runs it.
+
+```sh
 bun tools/spectrogram.ts in.wav out.png
 ```
 

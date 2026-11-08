@@ -33,6 +33,8 @@ usage: chimera <command> [args] [--float]
   calibrate vowels     [male|female|child|all] [--out file]
   calibrate consonants [--out file]
 
+  licenses       (the notices of data built into this binary: the CMU Pronouncing Dictionary)
+
 Output names are stems (<out>.wav). --float writes 32-bit float WAVs instead of 16-bit PCM.
 Calibration writes the tables the engine embeds, in crates/chimera/src/phonetics/.";
 
@@ -115,6 +117,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["diagnose", ..] => diagnose::run(&ctx, &args[1..]),
         ["calibrate", "vowels", ..] => calibrate::vowels(&args[2..]),
         ["calibrate", "consonants", ..] => calibrate::consonants(&args[2..]),
+        ["licenses", ..] => {
+            println!("CHIMERA is MIT licensed. It includes the CMU Pronouncing Dictionary:\n\n{}", render::CMUDICT_LICENSE);
+            Ok(())
+        }
         ["help" | "--help" | "-h", ..] => {
             println!("{USAGE}");
             Ok(())
