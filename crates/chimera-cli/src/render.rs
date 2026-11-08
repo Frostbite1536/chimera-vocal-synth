@@ -29,7 +29,7 @@ use std::io::Read;
 use std::time::Instant;
 
 /// Render `out.len()` samples in 128-sample blocks, as the tools did.
-fn render_blocks(v: &mut HumanVoice, out: &mut [f32]) {
+pub(crate) fn render_blocks(v: &mut HumanVoice, out: &mut [f32]) {
     for block in out.chunks_mut(128) {
         v.render(block);
     }

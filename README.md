@@ -38,6 +38,7 @@ Offline renders and measurement:
 cargo run --release -p chimera-cli -- render speech|text|song|notes|beatbox|creature|vowels …
 cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, bandwidths, pitch
 cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
+cargo run --release -p chimera-cli -- speak out.wav --text "Hello there."   # + JSON: word timings, mouth shapes at 100 Hz
 bun tools/spectrogram.ts in.wav out.png
 ```
 

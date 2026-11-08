@@ -8,6 +8,7 @@ mod compare;
 mod diagnose;
 mod js;
 mod render;
+mod speak;
 mod wav;
 
 use chimera::anatomy::human::{BODY_CHILD, BODY_FEMALE, BODY_MALE, BodyMix, HumanBody};
@@ -24,6 +25,8 @@ usage: chimera <command> [args] [--float]
   render beatbox [outdir] [preset name | pattern] [male|female|child] [bpm] [bars]
   render creature [creatureId] [outdir]
   render vowels  [male|female|child] [out]
+  speak          <out.wav> --text \"English text.\" [--body male|female|child]
+                 (prints JSON: per-word timings and the mouth's shape at 100 Hz, for animating a face)
   diagnose       [outdir]
   compare csd    [csd-dir] [outdir] [--songs a|b|all|en001a,…] [--body female] [--jobs n]
                  [--against earlier/score.json]  (score.json: distance to the singer, and the verdict)
@@ -107,6 +110,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 _ => Err(format!("unknown render kind {kind:?}\n\n{USAGE}")),
             }
         }
+        ["speak", ..] => speak::run(&args[1..]),
         ["compare", "csd", ..] => compare::csd(&ctx, &args[2..]),
         ["diagnose", ..] => diagnose::run(&ctx, &args[1..]),
         ["calibrate", "vowels", ..] => calibrate::vowels(&args[2..]),
