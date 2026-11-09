@@ -25,7 +25,7 @@
  */
 import { chromium } from "playwright-core";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const opt = (name: string, def: string) => {
@@ -147,8 +147,9 @@ if (!toArg) {
   await s.browser.close();
 }
 const frames = Math.round((to - from) * fps);
-// the segments, kept across runs; named by frame, so a capture with other bounds makes its own
-const dir = `${out}.parts`;
+// the segments, kept across runs; named by frame, so a capture with other bounds makes its own.
+// Absolute: ffmpeg's concat list resolves a relative path against the list's own folder.
+const dir = resolve(`${out}.parts`);
 mkdirSync(dir, { recursive: true });
 const bounds = Array.from({ length: jobs + 1 }, (_, i) => Math.round((i * frames) / jobs));
 const started = performance.now();
@@ -163,7 +164,8 @@ const mux = Bun.spawnSync(
     "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart", out],
   { stderr: "inherit" },
 );
-rmSync(dir, { recursive: true, force: true });
 if (errors.length) console.error(`page errors:\n${[...new Set(errors)].slice(0, 10).join("\n")}`);
-if (mux.exitCode !== 0) throw new Error(`ffmpeg (join and audio) exited ${mux.exitCode}`);
+// the parts go only once the video is made: they are hours of drawing
+if (mux.exitCode !== 0) throw new Error(`ffmpeg (join and audio) exited ${mux.exitCode}; the segments are kept in ${dir}`);
+rmSync(dir, { recursive: true, force: true });
 console.log(`${out}: ${frames} frames at ${fps} fps in ${((performance.now() - started) / 60000).toFixed(1)} min`);
