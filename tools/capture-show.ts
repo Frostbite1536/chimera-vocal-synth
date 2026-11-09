@@ -16,12 +16,15 @@
  *
  * --jobs splits the span into that many chunks, each in its own browser. A chunk starts drawing a
  * second early, without keeping those frames, so its motion (particles, the face) is under way at
- * the join. Frames go as JPEG to ffmpeg (libx264); the chunks are joined, then the audio (the show's
- * mix as a WAV, cut to the same span) is added as AAC.
+ * the join. Frames go as JPEG to ffmpeg (libx264), ten seconds to a file in `<out>.parts/`; the
+ * files are joined, then the audio (the show's mix as a WAV, cut to the same span) is added as AAC.
+ *
+ * A stopped capture resumes: run the same command again. A segment gets its final name only once
+ * it is whole, and a chunk starts at its first missing segment (a long capture can outlive the
+ * process running it). The parts are deleted once the video is made.
  */
 import { chromium } from "playwright-core";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -41,6 +44,8 @@ if (!url || !audio || !out) {
 }
 /** seconds drawn before a chunk's first kept frame */
 const WARM = 1;
+/** frames to a segment file */
+const SEG = 10 * fps;
 
 type W = { __captureT: number };
 
@@ -83,33 +88,54 @@ async function openShow(t: number) {
   return { browser, page, setT, cdp, duration, errors };
 }
 
-/** frames [k0, k1) of the whole span into a video-only file */
-async function chunk(k0: number, k1: number, file: string, tag: string): Promise<string[]> {
-  const t0 = from + k0 / fps;
-  const warm = Math.min(k0, Math.round(WARM * fps));
-  const s = await openShow(t0 - warm / fps);
-  const ff = Bun.spawn(
-    ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(fps), "-c:v", "mjpeg", "-i", "-",
-      "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", String(fps), file],
-    { stdin: "pipe", stderr: "inherit" },
-  );
-  const started = performance.now();
-  for (let k = k0 - warm; k < k1; k++) {
+/** a chunk's segment files: frames [k0, k1) of the span, SEG to a file */
+const segments = (k0: number, k1: number) =>
+  Array.from({ length: Math.ceil((k1 - k0) / SEG) }, (_, i) => {
+    const a = k0 + i * SEG, b = Math.min(k1, a + SEG);
+    return { a, b, file: join(dir, `seg-${String(a).padStart(6, "0")}-${b}.mp4`) };
+  });
+
+/** frames [k0, k1) of the span into its segment files, from the first one not yet made */
+async function chunk(k0: number, k1: number, tag: string): Promise<string[]> {
+  const todo = segments(k0, k1).filter((g) => !existsSync(g.file));
+  if (!todo.length) return [];
+  const first = todo[0].a;
+  const warm = Math.min(first, Math.round(WARM * fps));
+  const s = await openShow(from + (first - warm) / fps);
+  const draw = async (k: number) => {
     await s.setT(from + k / fps);
     await s.page.clock.fastForward(1000 / fps);
-    if (k < k0) continue;
-    const shot = await s.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 92 });
-    ff.stdin.write(Buffer.from(shot.data, "base64"));
-    const n = k - k0 + 1;
-    if (n % (fps * 15) === 0) {
-      const el = (performance.now() - started) / 1000;
-      console.log(`[${tag}] ${n}/${k1 - k0} frames, ${((el / n) * (k1 - k - 1) / 60).toFixed(0)} min to go`);
+  };
+  for (let k = first - warm; k < first; k++) await draw(k);
+  const started = performance.now();
+  let n = 0;
+  const total = todo.reduce((p, g) => p + g.b - g.a, 0);
+  for (let k = first; k < k1; ) {
+    const g = segments(k0, k1).find((x) => x.a === k)!;
+    const part = `${g.file}.part`;
+    const ff = Bun.spawn(
+      ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(fps), "-c:v", "mjpeg", "-i", "-",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", String(fps), "-f", "mp4", part],
+      { stdin: "pipe", stderr: "inherit" },
+    );
+    for (; k < g.b; k++) {
+      await draw(k);
+      const shot = await s.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 92 });
+      ff.stdin.write(Buffer.from(shot.data, "base64"));
+      if (++n % (fps * 15) === 0) {
+        const el = (performance.now() - started) / 1000;
+        console.log(`[${tag}] ${n}/${total} frames, ${((el / n) * (total - n) / 60).toFixed(0)} min to go`);
+      }
     }
+    ff.stdin.end();
+    const code = await ff.exited;
+    if (code !== 0) throw new Error(`[${tag}] ffmpeg exited ${code}`);
+    renameSync(part, g.file);
+    // a segment made earlier: draw through it unrecorded, so the motion carries on
+    for (let next = segments(k0, k1).find((x) => x.a === k); next && existsSync(next.file); next = segments(k0, k1).find((x) => x.a === k))
+      for (; k < next.b; k++) await draw(k);
   }
-  ff.stdin.end();
-  const code = await ff.exited;
   await s.browser.close();
-  if (code !== 0) throw new Error(`[${tag}] ffmpeg exited ${code}`);
   return s.errors;
 }
 
@@ -121,13 +147,16 @@ if (!toArg) {
   await s.browser.close();
 }
 const frames = Math.round((to - from) * fps);
-const dir = mkdtempSync(join(tmpdir(), "capture-show-"));
+// the segments, kept across runs; named by frame, so a capture with other bounds makes its own
+const dir = `${out}.parts`;
+mkdirSync(dir, { recursive: true });
 const bounds = Array.from({ length: jobs + 1 }, (_, i) => Math.round((i * frames) / jobs));
-const parts = Array.from({ length: jobs }, (_, i) => join(dir, `part-${i}.mp4`));
 const started = performance.now();
-console.log(`${frames} frames (${from}–${to.toFixed(2)} s at ${fps} fps), ${jobs} at a time`);
-const errors = (await Promise.all(parts.map((p, i) => chunk(bounds[i], bounds[i + 1], p, `${i + 1}/${jobs}`)))).flat();
-writeFileSync(join(dir, "parts.txt"), parts.map((p) => `file '${p}'`).join("\n"));
+const all = bounds.slice(0, -1).flatMap((k0, i) => segments(k0, bounds[i + 1]));
+const made = all.filter((g) => existsSync(g.file)).length;
+console.log(`${frames} frames (${from}–${to.toFixed(2)} s at ${fps} fps), ${jobs} at a time${made ? `; ${made}/${all.length} segments already made` : ""}`);
+const errors = (await Promise.all(bounds.slice(0, -1).map((k0, i) => chunk(k0, bounds[i + 1], `${i + 1}/${jobs}`)))).flat();
+writeFileSync(join(dir, "parts.txt"), all.map((g) => `file '${g.file}'`).join("\n"));
 const mux = Bun.spawnSync(
   ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", join(dir, "parts.txt"),
     "-ss", String(from), "-t", String(to - from), "-i", audio,
