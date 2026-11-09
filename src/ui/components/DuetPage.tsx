@@ -53,6 +53,9 @@ async function fetchOk(url: string): Promise<Response> {
   return r;
 }
 
+/** heads across: up to four in one row; more wrap onto two rows (six as three over three) */
+export const headColumns = (voices: number) => (voices <= 4 ? Math.max(1, voices) : Math.ceil(voices / 2));
+
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
 export function DuetPage(props: { id: string }) {
@@ -123,7 +126,7 @@ export function DuetPage(props: { id: string }) {
         <span className="wordmark">Chimera</span>
         <span className="duet-title">{title}</span>
       </header>
-      <main className="duet-heads" style={{ "--voices": loaded?.voices.length ?? 2 } as React.CSSProperties}>
+      <main className="duet-heads" style={{ "--cols": headColumns(loaded?.voices.length ?? 2) } as React.CSSProperties}>
         {loaded && transport ? loaded.voices.map((v, i) => <Head key={i} name={v.name} track={v.track} words={v.words} show={loaded.show} transport={transport} facing={i > 0 && i === loaded.voices.length - 1 ? -1 : 1} />) : <p className="duet-msg">Loading the song…</p>}
       </main>
       <footer className="duet-bar">

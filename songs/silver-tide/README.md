@@ -6,7 +6,7 @@ female or child body, mixed to stereo. No samples or instruments.
 
 E minor with Dorian and harmonic-minor colour (A major and B major chords), 72 BPM, 70 bars, about 4 minutes.
 
-Listen: [silver-tide.mp3](silver-tide.mp3) (4:03, 256 kbps).
+Listen: [silver-tide.mp3](silver-tide.mp3) (4:03, 256 kbps). Lyrics: [lyrics.txt](lyrics.txt).
 
 | Section | Bars | Lead |
 |---|---|---|
@@ -48,6 +48,8 @@ cargo build --release -p chimera-cli
 bun songs/silver-tide/score.ts             # print the layers
 bun songs/silver-tide/render.ts            # 100 renders into out/silver-tide/layers (~45 min on 4 cores)
 bun songs/silver-tide/mix.ts               # out/silver-tide/silver-tide.wav (and .mp3 with ffmpeg)
+bun songs/silver-tide/show.ts              # public/shows/silver-tide: six section leaders on 3D heads (~3 min)
+bun run dev                                # then open http://127.0.0.1:5317/?show=silver-tide
 ```
 
 `render.ts` skips layers whose melody file hasn't changed. The mix sets each layer to the same sung
