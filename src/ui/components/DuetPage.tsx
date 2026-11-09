@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnatomyView3D, type HeadFeed } from "./AnatomyView3D.tsx";
 import { Screen } from "./Screen.tsx";
+import { TransportBar } from "./TransportBar.tsx";
 import { TeleTrack } from "../../show/tele.ts";
 import { Transport } from "../../show/transport.ts";
 import { getModel } from "../useModel.ts";
@@ -56,15 +57,12 @@ async function fetchOk(url: string): Promise<Response> {
 /** heads across: up to four in one row; more wrap onto two rows (six as three over three) */
 export const headColumns = (voices: number) => (voices <= 4 ? Math.max(1, voices) : Math.ceil(voices / 2));
 
-const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
-
 export function DuetPage(props: { id: string }) {
   const base = `${import.meta.env.BASE_URL}shows/${props.id}/`;
   // one transport per mount (its context closes on unmount)
   const [transport, setTransport] = useState<Transport | null>(null);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [, setTick] = useState(0);
 
   useEffect(() => {
     const t = new Transport();
@@ -101,24 +99,12 @@ export function DuetPage(props: { id: string }) {
     };
   }, [base, transport]);
 
-  // the readouts follow the transport: at once on a change, and a few times a second while it plays
-  useEffect(() => {
-    if (!transport) return;
-    const off = transport.subscribe(() => setTick((n) => n + 1));
-    const id = setInterval(() => transport.isPlaying && setTick((n) => n + 1), 250);
-    return () => {
-      off();
-      clearInterval(id);
-    };
-  }, [transport]);
-
   if (error)
     return (
       <div className="duet">
         <p className="duet-msg error">This show could not load: {error}</p>
       </div>
     );
-  const st = transport?.state ?? { playing: false, time: 0, duration: 0, epoch: 0 };
   const title = loaded?.show.title ?? "Loading…";
   return (
     <div className="duet">
@@ -129,25 +115,7 @@ export function DuetPage(props: { id: string }) {
       <main className="duet-heads" style={{ "--cols": headColumns(loaded?.voices.length ?? 2) } as React.CSSProperties}>
         {loaded && transport ? loaded.voices.map((v, i) => <Head key={i} name={v.name} track={v.track} words={v.words} show={loaded.show} transport={transport} facing={i > 0 && i === loaded.voices.length - 1 ? -1 : 1} />) : <p className="duet-msg">Loading the song…</p>}
       </main>
-      <footer className="duet-bar">
-        <button className="primary large" disabled={!loaded} onClick={() => (st.playing ? transport?.pause() : transport?.play())}>
-          {st.playing ? "Pause" : st.duration > 0 && st.time >= st.duration - 0.05 ? "Again" : "Play"}
-        </button>
-        <span className="duet-time">
-          {clock(st.time)} / {clock(st.duration)}
-        </span>
-        <input
-          type="range"
-          aria-label="Position in the song"
-          min={0}
-          max={st.duration || 1}
-          step={0.1}
-          value={st.time}
-          disabled={!loaded}
-          onChange={(e) => transport?.seek(Number(e.target.value))}
-          style={{ "--pos": `${st.duration ? (100 * st.time) / st.duration : 0}%` } as React.CSSProperties}
-        />
-      </footer>
+      <TransportBar transport={transport} ready={!!loaded} />
     </div>
   );
 }

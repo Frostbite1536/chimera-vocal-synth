@@ -4,6 +4,10 @@
  *          [--fps 30] [--size 1920x1080] [--from s] [--to s] [--jobs n]
  * CHROMIUM=/path/to/chrome launches a browser other than the one playwright-core pins.
  *
+ * Capture from `bun run build && bun run preview` (http://127.0.0.1:5318/?show=<id>), not the dev
+ * server: an hour-long capture outlives many edits, and the dev server hot-reloads each into the
+ * open pages, remounting the show (its transport stops, the heads reset) partway through the video.
+ *
  * The page never runs in real time: its timers and animation frames run on Playwright's fake
  * clock, and the transport's audio clock (AudioContext currentTime and output timestamp) reads the
  * frame being drawn. Each video frame is exactly that moment of the song however slowly it renders
