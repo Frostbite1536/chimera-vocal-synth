@@ -6,6 +6,8 @@ female or child body, mixed to stereo. No samples or instruments.
 
 E minor with Dorian and harmonic-minor colour (A major and B major chords), 72 BPM, 70 bars, about 4 minutes.
 
+Listen: [silver-tide.mp3](silver-tide.mp3) (4:03, 256 kbps).
+
 | Section | Bars | Lead |
 |---|---|---|
 | intro | 8 | choir and drone swell up, the ostinato enters at bar 5 |

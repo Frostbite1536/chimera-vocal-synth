@@ -54,7 +54,7 @@ const groupOf = (t: Track) => (t.group === "lead" && t.id !== "lead-01" ? "doubl
 /** per section: a level (dB) or a ramp [from, to] across it; sections not named stay at 0 dB */
 type Lv = number | [number, number];
 const PADS: Record<string, Lv> = {
-  intro: [-16, -3],
+  intro: [-9, -2],
   verse1: -5,
   chorus1: 0,
   interlude: -2,
@@ -67,18 +67,19 @@ const PADS: Record<string, Lv> = {
 };
 const LEVELS: Record<string, Record<string, Lv>> = {
   soprano: PADS,
-  alto: PADS,
-  tenor: PADS,
-  bass: { ...PADS, intro: [-12, -3] },
+  // alto and tenor open the song alone, so they start near full
+  alto: { ...PADS, intro: [0, -1] },
+  tenor: { ...PADS, intro: [0, -1] },
+  bass: { ...PADS, intro: [-8, -2] },
   sub: { ...PADS, verse1: -3, outro: [-3, -30] },
   double: { verse1: -8, chorus1: -2, interlude: -3, verse2: -6, chorus2: -1, bridge: -3, final: 0, tag: 0 },
   harmony: { chorus1: -2, bridge: -3 },
   lowlead: { chorus1: -2 },
-  ostinato: { intro: [-8, -2], verse1: -2, interlude: 0, verse2: -1, final: 1 },
-  descant: { intro: [-10, -2], bridge: [-4, 1], outro: [-1, -24] },
+  ostinato: { intro: [-5, -1], verse1: -2, interlude: 0, verse2: -1, final: 1 },
+  descant: { intro: [-6, -1], bridge: [-4, 1], outro: [-1, -24] },
   counter: { verse2: -3 },
   shimmer: { outro: [-2, -26] },
-  drone: { intro: [-14, -2], outro: [-2, -30] },
+  drone: { intro: [1, 0], outro: [-2, -30] },
 };
 
 /** breakpoints (bar, dB) for a group */
