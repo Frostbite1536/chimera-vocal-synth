@@ -26,6 +26,7 @@
  *
  * Usage: bun tools/layout-lint.ts [--url http://...] [--out out/layout] [--only 1440x900] [--mode play|duet]
  * Without --url it starts its own Vite dev server (build the wasm first: bun run wasm).
+ * CHROMIUM=/path/to/chrome launches a browser other than the one playwright-core pins.
  * Screenshots of every failing view are saved under --out.
  */
 import { chromium } from "playwright-core";
@@ -277,7 +278,7 @@ async function main() {
   if (duet) makeDuet(duetDir);
 
   // WebGL through SwiftShader, for the 3D face
-  const browser = await chromium.launch({ headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM || undefined, args: ["--autoplay-policy=no-user-gesture-required", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   let errors = 0, warnings = 0, views = 0;
   for (const { w, h } of viewports) {
     const page = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 1 });

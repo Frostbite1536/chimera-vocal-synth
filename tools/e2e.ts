@@ -2,6 +2,7 @@
  * Headless-Chromium smoke test: loads the app, starts audio, interacts, collects console errors,
  * measures worklet load, and saves screenshots.
  * Usage: bun tools/e2e.ts [url] [outdir]
+ * CHROMIUM=/path/to/chrome launches a browser other than the one playwright-core pins.
  */
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
@@ -12,6 +13,7 @@ mkdirSync(outDir, { recursive: true });
 
 const browser = await chromium.launch({
   headless: true,
+  executablePath: process.env.CHROMIUM || undefined,
   args: ["--autoplay-policy=no-user-gesture-required", "--use-fake-ui-for-media-stream"],
 });
 const errors: string[] = [];
