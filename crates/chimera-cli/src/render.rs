@@ -1,7 +1,7 @@
 //! `chimera render …`: ports of `tools/render-{speech,text,song,beatbox,creature,vowels}.ts`.
 
 use crate::js::{fixed, num, pad_end, pad_start};
-use crate::{Ctx, FS, arg, body, body_mix, peak, repo_path, wav_name};
+use crate::{Ctx, FS, arg, body, body_mix, peak, wav_name};
 use chimera::analysis::lpc::{FormantOpts, estimate_formants};
 use chimera::anatomy::human::{ArticKey, BodyMix, N_ARTIC};
 use chimera::analysis::pitch::{YinOpts, yin_pitch};
@@ -29,20 +29,24 @@ use std::io::Read;
 use std::time::Instant;
 
 /// Render `out.len()` samples in 128-sample blocks, as the tools did.
-fn render_blocks(v: &mut HumanVoice, out: &mut [f32]) {
+pub(crate) fn render_blocks(v: &mut HumanVoice, out: &mut [f32]) {
     for block in out.chunks_mut(128) {
         v.render(block);
     }
 }
 
-/// The CMU dictionary (`public/data/cmudict.txt.gz`) loaded into a G2P.
+/// The CMU dictionary (`public/data/cmudict.txt.gz`), built into the binary so `chimera` runs
+/// from anywhere (`cargo install --path crates/chimera-cli`, or a copied `target/release/chimera`).
+/// Its licence asks a binary to carry the notice: `CMUDICT_LICENSE`, printed by `chimera licenses`.
+const CMUDICT_GZ: &[u8] = include_bytes!("../../../public/data/cmudict.txt.gz");
+pub const CMUDICT_LICENSE: &str = include_str!("../../../public/data/CMUDICT-LICENSE.txt");
+
+/// The CMU dictionary loaded into a G2P.
 pub fn g2p() -> Result<EnglishG2P, String> {
-    let path = repo_path("public/data/cmudict.txt.gz");
-    let gz = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
     let mut text = String::new();
-    flate2::read::GzDecoder::new(&gz[..])
+    flate2::read::GzDecoder::new(CMUDICT_GZ)
         .read_to_string(&mut text)
-        .map_err(|e| format!("{path}: {e}"))?;
+        .map_err(|e| format!("the built-in cmudict.txt.gz: {e}"))?;
     let mut g = EnglishG2P::new();
     g.load_dict(&text);
     Ok(g)

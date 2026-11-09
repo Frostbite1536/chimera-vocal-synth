@@ -7,6 +7,7 @@ use chimera::airway::frequency::{find_peaks, transfer_function};
 use chimera::anatomy::human::{BodyMix, HumanArtic, HumanFrame};
 use chimera::control::beat_player::BeatPlayer;
 use chimera::creatures::voice::CreatureVoice;
+use chimera::lipsync;
 use chimera::math;
 use chimera::phonetics::beatbox::{self, BeatStep};
 use chimera::phonetics::planner::{self, PhraseInput, PlanOptions};
@@ -43,6 +44,19 @@ type Res = Result<Value, String>;
 
 fn arg<T: serde::de::DeserializeOwned>(req: &Value, key: &str) -> Result<T, String> {
     serde_json::from_value(req.get(key).cloned().unwrap_or(Value::Null)).map_err(|e| format!("{key}: {e}"))
+}
+
+/// Standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Res {
@@ -151,6 +165,30 @@ fn dispatch(st: &mut State, req: &Value) -> Res {
         "formatBeat" => Ok(Value::String(beatbox::format_beat(&arg::<Vec<Option<BeatStep>>>(req, "steps")?))),
         "beatReady" => to_json(&beatbox::beat_ready(arg::<BodyMix>(req, "body")?)),
         "leadIn" => Ok(json!(BeatPlayer::lead_in(&arg::<String>(req, "id")?, arg::<BodyMix>(req, "body")?))),
+        // ---------------------------------------------------------------- takes with a mouth (for Weft)
+        // The CLI's `speak | sing | call` JSON, plus `pcm16`: the samples as base64 16-bit
+        // little-endian, the bytes a 16-bit WAV holds. `speak` and `sing` need the dictionary
+        // (`g2pLoad`) first. The sample rate defaults to 48 kHz.
+        "speak" | "sing" | "call" => {
+            let fs: f64 = arg::<Option<f64>>(req, "sampleRate")?.unwrap_or(48000.0);
+            let body: String = arg::<Option<String>>(req, "body")?.unwrap_or_else(|| "male".to_string());
+            let (mut out, pcm) = match name {
+                "speak" => {
+                    let s = lipsync::speak(&st.g2p, &arg::<String>(req, "text")?, &body, fs)?;
+                    (s.to_json(), s.take.pcm)
+                }
+                "sing" => {
+                    let s = lipsync::sing(&st.g2p, &arg::<lipsync::Melody>(req, "melody")?, &body, fs)?;
+                    (s.to_json(), s.take.pcm)
+                }
+                _ => {
+                    let c = lipsync::call(&arg::<String>(req, "creature")?, arg::<Option<String>>(req, "call")?.as_deref(), fs)?;
+                    (c.to_json(), c.take.pcm)
+                }
+            };
+            out["pcm16"] = json!(base64(&lipsync::pcm16_le(&pcm)));
+            Ok(out)
+        }
         _ => Err(format!("unknown fn {name}")),
     }
 }

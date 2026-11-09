@@ -428,3 +428,56 @@ fn render_notes_tele_records_the_live_telemetry_without_changing_the_sound() {
     let a_lip = artic["frames"][96][lip].as_f64().unwrap(); // 0.96 s = 60 tele hops
     assert!((at(60, 11 + lip) as f64 - a_lip).abs() < 1e-3, "lipAp {} vs {a_lip}", at(60, 11 + lip));
 }
+
+#[test]
+fn speak_writes_a_clip_and_prints_its_word_timings_and_mouth_track() {
+    let a = tmp("speak-a.wav");
+    let b = tmp("speak-b.wav");
+    let run = |path: &str| -> serde_json::Value {
+        let stdout = chimera(&["speak", path, "--text", "Five thousand dollars.", "--body", "female"]);
+        serde_json::from_str(stdout.trim()).expect("one JSON object")
+    };
+    let first = run(&a);
+    let second = run(&b);
+    // the same line is the same clip, byte for byte (a tool names the clip by its hash)
+    let bytes = std::fs::read(&a).unwrap();
+    assert_eq!(bytes, std::fs::read(&b).unwrap());
+    assert_eq!(first["mouth"], second["mouth"]);
+
+    // 16-bit mono 48 kHz, the 44-byte header and nothing after the data
+    let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    assert_eq!((u16_at(20), u16_at(22), u32_at(24), u16_at(34)), (1, 1, 48000, 16));
+    assert_eq!(u32_at(40) as usize, bytes.len() - 44);
+    let samples = (bytes.len() - 44) / 2;
+    assert_eq!(first["samples"], samples);
+    assert_eq!(first["durationSec"], samples as f64 / 48000.0);
+
+    let words = first["words"].as_array().unwrap();
+    assert_eq!(words.len(), 3);
+    assert_eq!(first["mouth"]["rate"], 100);
+    assert_eq!(first["mouth"]["shapes"], serde_json::json!(["rest", "open", "wide", "round", "teeth"]));
+    let track = first["mouth"]["track"].as_str().unwrap();
+    assert_eq!(track.len() * 480, samples, "one shape per 1/100 s");
+    assert!(track.contains('4'), "the f of five puts the lip on the teeth: {track}");
+}
+
+#[test]
+fn speak_runs_away_from_the_checkout_and_carries_the_dictionary_notice() {
+    // a copy of the binary in a directory of its own, run from there: the dictionary is built in
+    let dir = tmp("moved-binary");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = format!("{dir}/chimera");
+    std::fs::copy(env!("CARGO_BIN_EXE_chimera"), &bin).unwrap();
+    let out = Command::new(&bin)
+        .args(["speak", "line.wav", "--text", "Hello there."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(summary["words"].as_array().unwrap().len(), 2);
+
+    let licenses = chimera(&["licenses"]);
+    assert!(licenses.contains("Carnegie Mellon University") && licenses.contains("Redistributions in binary form"), "{licenses}");
+}
