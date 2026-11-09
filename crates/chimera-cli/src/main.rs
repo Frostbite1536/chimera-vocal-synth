@@ -26,7 +26,10 @@ usage: chimera <command> [args] [--float]
   render creature [creatureId] [outdir]
   render vowels  [male|female|child] [out]
   speak          <out.wav> --text \"English text.\" [--body male|female|child]
-                 (prints JSON: per-word timings and the mouth's shape at 100 Hz, for animating a face)
+  sing           <out.wav> --melody melody.json [--body male|female|child]
+  call           <out.wav> --creature songbird|seal|alligator|elephant [--call <id>] | call --list
+                 (each prints JSON: word timings and the mouth's shape and openness at 100 Hz,
+                 for animating a face; melody.json is render notes' format)
   diagnose       [outdir]
   compare csd    [csd-dir] [outdir] [--songs a|b|all|en001a,…] [--body female] [--jobs n]
                  [--against earlier/score.json]  (score.json: distance to the singer, and the verdict)
@@ -112,7 +115,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 _ => Err(format!("unknown render kind {kind:?}\n\n{USAGE}")),
             }
         }
-        ["speak", ..] => speak::run(&args[1..]),
+        ["speak", ..] => speak::speak(&args[1..]),
+        ["sing", ..] => speak::sing(&args[1..]),
+        ["call", ..] => speak::call(&args[1..]),
         ["compare", "csd", ..] => compare::csd(&ctx, &args[2..]),
         ["diagnose", ..] => diagnose::run(&ctx, &args[1..]),
         ["calibrate", "vowels", ..] => calibrate::vowels(&args[2..]),

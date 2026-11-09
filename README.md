@@ -38,12 +38,17 @@ Offline renders and measurement:
 cargo run --release -p chimera-cli -- render speech|text|song|notes|beatbox|creature|vowels …
 cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, bandwidths, pitch
 cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
-cargo run --release -p chimera-cli -- speak out.wav --text "Hello there."   # + JSON: word timings, mouth shapes at 100 Hz
+cargo run --release -p chimera-cli -- speak out.wav --text "Hello there."   # + JSON: word timings, the mouth at 100 Hz
+cargo run --release -p chimera-cli -- sing out.wav --melody melody.json     # render notes' melody format; + notes, lead
+cargo run --release -p chimera-cli -- call out.wav --creature seal --call zap   # a creature call; call --list
 ```
 
 `cargo install --path crates/chimera-cli` puts `chimera` on your PATH; the pronunciation
 dictionary is built into the binary, so it runs from anywhere (`chimera licenses` prints the
-notice that comes with it). Weft's `weft voice synth --provider chimera` runs it.
+notice that comes with it). Weft's `weft voice synth|sing --provider chimera` runs it. The
+rendering and the mouth (shape, and how open, round and spread, every 10 ms) are the engine's
+(`chimera::lipsync`), so the wasm build offers the same takes (`chimera_call` `speak`, `sing`,
+`call`).
 
 ```sh
 bun tools/spectrogram.ts in.wav out.png

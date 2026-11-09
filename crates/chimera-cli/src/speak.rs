@@ -1,288 +1,108 @@
-//! `chimera speak <out.wav> --text "…" [--body male|female|child]`: one English line for a tool
-//! that animates a face to it (Weft's `weft voice synth --provider chimera`). It writes the line
-//! as a 16-bit mono 48 kHz WAV, as `render text` does, and prints one JSON object:
+//! `chimera speak | sing | call`: a voice rendered with its mouth, for a tool that animates a
+//! face to it (Weft's `weft voice synth|sing --provider chimera`). Each writes a 16-bit mono
+//! 48 kHz WAV and prints one JSON object: the clip's duration, its mouth (`mouth.track`, one of
+//! `mouth.shapes` per 10 ms; `mouth.channels`, how open, round and spread, base-36 per 10 ms)
+//! and, for speech and song, the clip-relative `[start, end)` of each whitespace word. The
+//! rendering and the mouth are the engine's (`chimera::lipsync`); this file reads arguments and
+//! writes files.
 //!
-//! - `words`: clip-relative `[start, end)` seconds per whitespace word of the text, or `null`
-//!   when a word says nothing (a lone "--") or the words can't be matched up;
-//! - `mouth`: the mouth's shape every 1/100 s, read from the simulated lips and jaw (one of
-//!   `MOUTH_SHAPES` per character, by index), so the face moves the way the voice was made.
-//!   Lips touching and the lip on the teeth are contacts; otherwise the lips and jaw are
-//!   matched to the body's own calibrated vowels (`mouth_prototypes`), because the bodies'
-//!   tables differ: the child's /i/ spreads its lips to 0.66 where the man's spread to 1.
-//!
-//! The sound is `render text`'s: the same plan, source and voice. Only the tail differs: it is
-//! cut `TAIL_FRAMES` after the last frame within 60 dB of the clip's peak (`render text`
-//! keeps 0.3 s, of which ~0.2 s is silence a dialogue line has no room for), so the clip is a
-//! whole number of mouth frames.
+//! - `speak <out.wav> --text "…" [--body male|female|child]`: English text, the `render text`
+//!   plan, cut after its silent tail.
+//! - `sing <out.wav> --melody melody.json [--body …]`: `{ bpm, lyrics, notes: [[midi, beats], …],
+//!   vibrato?, t0? }` as `render notes` reads it; also prints `lead` (the clip time of the first
+//!   note's beat) and `notes` (each sounding note's `[start, end)`).
+//! - `call <out.wav> --creature songbird|seal|alligator|elephant [--call <id>]`: one call, its
+//!   beak or jaw as the mouth (`rest` or `open`). `call --list` prints the creatures' calls.
 
-use crate::render::{g2p, render_blocks};
-use crate::{FS, body, body_mix, wav};
-use chimera::anatomy::human::{ArticKey, BodyMix, HumanArtic, NEUTRAL};
-use chimera::control::articulators::artic_spec;
-use chimera::math::js_round;
-use chimera::phonetics::english::{EnglishG2P, Phrase};
-use chimera::phonetics::planner::{PhraseInput, PlanOptions, expand, plan_phrases, vowel_artic};
-use chimera::phonetics::{Intonation, Plan};
-use chimera::voice::human_voice::{HumanVoice, SourcePatch};
-use serde_json::json;
+use crate::render::g2p;
+use crate::{FS, wav};
+use chimera::lipsync::{self, Melody};
+use serde_json::{Value, json};
 
-/// Mouth frames per second.
-pub const MOUTH_RATE: usize = 100;
-const HOP: usize = FS as usize / MOUTH_RATE;
-
-/// The five mouth shapes of cutout animation (a reduced Preston-Blair set, Weft's visemes): lips
-/// together or at rest, open (jaw down), wide (spread lips), round (protruded lips), lower lip on
-/// the upper teeth. `mouth.track` holds each frame's index into this list.
-pub const MOUTH_SHAPES: [&str; 5] = ["rest", "open", "wide", "round", "teeth"];
-const REST: u8 = 0;
-const OPEN: u8 = 1;
-const WIDE: u8 = 2;
-const ROUND: u8 = 3;
-const TEETH: u8 = 4;
-
-/// Lower lip tucked under the incisors at least this far (0 free, 1 tucked; /f v/ target 1).
-const TEETH_FROM: f64 = 0.5;
-/// Lips at most this far apart are touching (the bilabial target is −0.25; the closest vowel,
-/// the child's /o/, keeps 0.13).
-const SHUT_BELOW: f64 = 0.05;
-
-/// The vowels whose calibrated lips and jaw stand for each open-mouth shape. /ɔ/ and /ə/ are left
-/// out: they sit between shapes (the man's /ɔ/ is barely rounder than his /ʌ/).
-const PROTOTYPES: [(u8, &[&str]); 3] = [(WIDE, &["i", "ɪ", "e", "ɛ"]), (OPEN, &["æ", "a", "ɑ", "ʌ"]), (ROUND, &["o", "u", "ʊ"])];
-/// What the shape of an open mouth is matched on.
-const LIP_KEYS: [ArticKey; 4] = [ArticKey::Jaw, ArticKey::LipAp, ArticKey::LipProt, ArticKey::LipWidth];
-
-/// One shape's lips and jaw, each in its articulator's range (0..1), so they weigh alike.
-pub type Prototype = (u8, [f64; 4]);
-
-fn lip_point(get: impl Fn(ArticKey) -> f64) -> [f64; 4] {
-    LIP_KEYS.map(|k| {
-        let s = artic_spec(k);
-        (get(k) - s.min) / (s.max - s.min)
-    })
+fn write(out: &str, pcm: &[f32], mut summary: Value) -> Result<(), String> {
+    wav::write(out, pcm, FS as u32, false).map_err(|e| format!("{out}: {e}"))?;
+    summary["file"] = json!(out);
+    println!("{summary}");
+    Ok(())
 }
 
-/// The body's calibrated vowels in `PROTOTYPES`, as lip points.
-pub fn mouth_prototypes(body: BodyMix) -> Vec<Prototype> {
-    let mut out = Vec::new();
-    for (shape, vowels) in PROTOTYPES {
-        for v in vowels {
-            if let Some(p) = vowel_artic(v, body) {
-                out.push((shape, lip_point(|k| p.get(k).unwrap_or(NEUTRAL.get(k)))));
-            }
-        }
-    }
-    out
-}
-
-/// The mouth shape the articulators `x` show. Outside speech the mouth rests, whatever the lips
-/// drift to on the way back to neutral. In speech, contacts first (lip on teeth, lips together),
-/// then the shape of the nearest prototype vowel.
-pub fn mouth_shape(x: &HumanArtic, speaking: bool, prototypes: &[Prototype]) -> u8 {
-    if !speaking {
-        return REST;
-    }
-    if x.labiodental >= TEETH_FROM {
-        return TEETH;
-    }
-    if x.lip_ap <= SHUT_BELOW {
-        return REST;
-    }
-    let here = lip_point(|k| x.get(k));
-    let mut best = (OPEN, f64::INFINITY);
-    for (shape, p) in prototypes {
-        let d: f64 = here.iter().zip(p).map(|(a, b)| (a - b) * (a - b)).sum();
-        if d < best.1 {
-            best = (*shape, d);
-        }
-    }
-    best.0
-}
-
-/// Frames quieter than this re the clip's peak (RMS, as a ratio: −60 dB) are silence at the end.
-const TAIL_FLOOR: f64 = 1e-3;
-/// Frames kept after the last one that isn't silence (20 ms).
-const TAIL_FRAMES: usize = 2;
-
-/// How many whole frames of `pcm` to keep: up to the last frame louder than `TAIL_FLOOR` re the
-/// peak, plus `TAIL_FRAMES` (never more than there are).
-fn frames_to_keep(pcm: &[f32]) -> usize {
-    let peak = pcm.iter().fold(0f64, |m, &x| m.max((x as f64).abs()));
-    let floor = peak * TAIL_FLOOR;
-    let frames = pcm.len() / HOP;
-    let last = (0..frames)
-        .rev()
-        .find(|&f| {
-            let fr = &pcm[f * HOP..(f + 1) * HOP];
-            (fr.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>() / HOP as f64).sqrt() > floor
-        })
-        .map_or(0, |f| f + 1);
-    (last + TAIL_FRAMES).min(frames)
-}
-
-/// What `speak` made: the samples (a whole number of mouth frames), and the timings it printed.
-pub struct Spoken {
-    pub pcm: Vec<f32>,
-    pub ipa: String,
-    pub words: Option<Vec<[f64; 2]>>,
-    /// one `MOUTH_SHAPES` index per frame, as digits
-    pub mouth: String,
-}
-
-/// Each phrase's `[t0, t1]`: planned segments follow each other without a gap inside a phrase,
-/// and a pause separates phrases.
-fn phrase_spans(plan: &Plan) -> Vec<[f64; 2]> {
-    let mut spans: Vec<[f64; 2]> = Vec::new();
-    for s in &plan.segments {
-        match spans.last_mut() {
-            Some(span) if s.t0 <= span[1] + 1e-9 => span[1] = s.t1,
-            _ => spans.push([s.t0, s.t1]),
-        }
-    }
-    spans
-}
-
-/// Each said word's `[t0, t1]`, from the phrases' segments and the planned segments they expand
-/// to (a diphthong plans two). `None` if the plan doesn't line up with the phrases.
-fn word_spans(phrases: &[Phrase], plan: &Plan) -> Option<Vec<[f64; 2]>> {
-    let mut spans = Vec::new();
-    let mut at = 0usize;
-    let mut start: Option<f64> = None;
-    for p in phrases {
-        for s in &p.segments {
-            let n = expand(&s.ipa).map_or(1, <[&str]>::len);
-            let first = plan.segments.get(at)?;
-            let last = plan.segments.get(at + n - 1)?;
-            start.get_or_insert(first.t0);
-            at += n;
-            if s.word_end == Some(true) {
-                spans.push([start.take()?, last.t1]);
-            }
-        }
-    }
-    (at == plan.segments.len()).then_some(spans)
-}
-
-/// The said words' spans regrouped into the text's whitespace words: a whitespace word that
-/// says several words ("42" says "forty two") spans them all. `None` when a whitespace word
-/// says nothing, or the counts disagree.
-fn whitespace_spans(g: &EnglishG2P, text: &str, said: &[[f64; 2]]) -> Option<Vec<[f64; 2]>> {
-    let mut out = Vec::new();
-    let mut at = 0usize;
-    for token in text.split_whitespace() {
-        let n: usize = g.to_phrases(token).iter().map(|p| p.words.len()).sum();
-        if n == 0 {
-            return None;
-        }
-        let first = said.get(at)?;
-        let last = said.get(at + n - 1)?;
-        out.push([first[0], last[1]]);
-        at += n;
-    }
-    (at == said.len()).then_some(out)
-}
-
-/// Seconds to microseconds, so the JSON prints short numbers (spans keep their order).
-fn us(t: f64) -> f64 {
-    js_round(t * 1e6) / 1e6
-}
-
-/// Plan and render `text` in `body_name`'s voice, reading the mouth every frame.
-pub fn speak_text(text: &str, body_name: &str) -> Result<Spoken, String> {
-    let b = body(body_name)?;
-    let f0 = match body_name {
-        "female" => 205.0,
-        "child" => 250.0,
-        _ => 112.0,
-    };
-    let g = g2p()?;
-    let phrases = g.to_phrases(text);
-    if phrases.is_empty() {
-        return Err(format!("{text:?} has no words to say"));
-    }
-    let ipa = phrases
-        .iter()
-        .map(|p| p.segments.iter().map(|s| format!("{}{}", if s.stress == Some(1) { "ˈ" } else { "" }, s.ipa)).collect::<String>() + if p.intonation == Intonation::Question { "?" } else { "" })
-        .collect::<Vec<_>>()
-        .join(" | ");
-    let inputs: Vec<PhraseInput> = phrases
-        .iter()
-        .map(|p| PhraseInput { segments: p.segments.clone(), intonation: Some(p.intonation), pause: Some(p.pause) })
-        .collect();
-    let plan = plan_phrases(&inputs, &PlanOptions { body: body_name.into(), t0: 0.05, f0: Some(f0), ..Default::default() });
-    let mut voice = HumanVoice::new(FS, b, 2);
-    voice.set_source(&SourcePatch::f0(f0));
-    voice.schedule(&plan.gestures);
-
-    let speaking = phrase_spans(&plan);
-    let prototypes = mouth_prototypes(body_mix(body_name)?);
-    let frames = (js_round(FS * (plan.end + 0.3)) as usize).div_ceil(HOP);
-    let mut pcm = vec![0f32; frames * HOP];
-    let mut mouth = String::with_capacity(frames);
-    let half = HOP / 2;
-    for (f, frame) in pcm.chunks_mut(HOP).enumerate() {
-        // the frame's shape is the mouth at its middle; the voice runs sample by sample, so
-        // stopping there doesn't change the sound
-        render_blocks(&mut voice, &mut frame[..half]);
-        let t = (f * HOP + half) as f64 / FS;
-        let on = speaking.iter().any(|s| t >= s[0] && t < s[1]);
-        mouth.push(char::from(b'0' + mouth_shape(&voice.artic.x, on, &prototypes)));
-        render_blocks(&mut voice, &mut frame[half..]);
-    }
-
-    let keep = frames_to_keep(&pcm);
-    pcm.truncate(keep * HOP);
-    mouth.truncate(keep);
-
-    let words = word_spans(&phrases, &plan)
-        .and_then(|said| whitespace_spans(&g, text, &said))
-        .map(|spans| spans.iter().map(|s| [us(s[0]), us(s[1])]).collect());
-    Ok(Spoken { pcm, ipa, words, mouth })
-}
-
-/// `speak <out.wav> --text "…" [--body male|female|child]`
-pub fn run(a: &[String]) -> Result<(), String> {
-    const USE: &str = "speak <out.wav> --text \"English text.\" [--body male|female|child]";
-    let mut out: Option<&str> = None;
-    let mut text: Option<&str> = None;
-    let mut body_name = "male";
+/// `<out.wav>` and the `--flag value` pairs in `flags`; anything else is an error.
+fn parse<'a>(a: &'a [String], usage: &str, flags: &[&str]) -> Result<(Option<&'a str>, Vec<(&'a str, &'a str)>), String> {
+    let mut out = None;
+    let mut values = Vec::new();
     let mut it = a.iter();
     while let Some(x) = it.next() {
         match x.as_str() {
-            "--text" => text = Some(it.next().ok_or(USE)?),
-            "--body" => body_name = it.next().ok_or(USE)?,
-            flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}\n{USE}")),
+            flag if flags.contains(&flag) => values.push((flag, it.next().ok_or(usage)?.as_str())),
+            flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}\n{usage}")),
             path if out.is_none() => out = Some(path),
-            extra => return Err(format!("unexpected argument {extra:?}\n{USE}")),
+            extra => return Err(format!("unexpected argument {extra:?}\n{usage}")),
         }
     }
-    let (Some(out), Some(text)) = (out, text) else { return Err(USE.to_string()) };
-    let spoken = speak_text(text, body_name)?;
-    wav::write(out, &spoken.pcm, FS as u32, false).map_err(|e| format!("{out}: {e}"))?;
-    let summary = json!({
-        "file": out,
-        "sampleRate": FS as u32,
-        "samples": spoken.pcm.len(),
-        "durationSec": spoken.pcm.len() as f64 / FS,
-        "body": body_name,
-        "ipa": spoken.ipa,
-        "words": spoken.words,
-        "mouth": { "rate": MOUTH_RATE, "shapes": MOUTH_SHAPES, "track": spoken.mouth },
-        "engine": format!("chimera {}", env!("CARGO_PKG_VERSION")),
-    });
-    println!("{summary}");
-    Ok(())
+    Ok((out, values))
+}
+
+fn flag<'a>(values: &[(&str, &'a str)], name: &str) -> Option<&'a str> {
+    values.iter().rev().find(|(k, _)| *k == name).map(|(_, v)| *v)
+}
+
+/// `speak <out.wav> --text "…" [--body male|female|child]`
+pub fn speak(a: &[String]) -> Result<(), String> {
+    const USE: &str = "speak <out.wav> --text \"English text.\" [--body male|female|child]";
+    let (out, v) = parse(a, USE, &["--text", "--body"])?;
+    let (Some(out), Some(text)) = (out, flag(&v, "--text")) else { return Err(USE.to_string()) };
+    let spoken = lipsync::speak(&g2p()?, text, flag(&v, "--body").unwrap_or("male"), FS)?;
+    write(out, &spoken.take.pcm, spoken.to_json())
+}
+
+/// `sing <out.wav> --melody melody.json [--body male|female|child]`
+pub fn sing(a: &[String]) -> Result<(), String> {
+    const USE: &str = "sing <out.wav> --melody melody.json [--body male|female|child]";
+    let (out, v) = parse(a, USE, &["--melody", "--body"])?;
+    let (Some(out), Some(path)) = (out, flag(&v, "--melody")) else { return Err(USE.to_string()) };
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let melody: Melody = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    let sung = lipsync::sing(&g2p()?, &melody, flag(&v, "--body").unwrap_or("male"), FS)?;
+    write(out, &sung.take.pcm, sung.to_json())
+}
+
+/// `call <out.wav> --creature <id> [--call <id>]`, or `call --list`
+pub fn call(a: &[String]) -> Result<(), String> {
+    const USE: &str = "call <out.wav> --creature songbird|seal|alligator|elephant [--call <id>] | call --list";
+    if a.iter().any(|x| x == "--list") {
+        let list: serde_json::Map<String, Value> = lipsync::creature_calls().into_iter().map(|(c, calls)| (c.to_string(), json!(calls))).collect();
+        println!("{}", Value::Object(list));
+        return Ok(());
+    }
+    let (out, v) = parse(a, USE, &["--creature", "--call"])?;
+    let (Some(out), Some(creature)) = (out, flag(&v, "--creature")) else { return Err(USE.to_string()) };
+    let called = lipsync::call(creature, flag(&v, "--call"), FS)?;
+    write(out, &called.take.pcm, called.to_json())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body;
+    use crate::render::render_blocks;
+    use chimera::math::js_round;
+    use chimera::phonetics::planner::{PhraseInput, PlanOptions, plan_phrases};
+    use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
-    /// The track as letters (`.` rest, `O` open, `W` wide, `U` round, `T` teeth), without the
-    /// rest before and after the speech.
+    const HOP: usize = 480;
+
+    fn spoken(text: &str, body: &str) -> lipsync::Spoken {
+        lipsync::speak(&g2p().unwrap(), text, body, FS).unwrap()
+    }
+
+    /// A track as letters (`.` rest, `O` open, `W` wide, `U` round, `T` teeth), without the rest
+    /// before and after.
+    fn letters(track: &str) -> String {
+        track.chars().map(|c| ['.', 'O', 'W', 'U', 'T'][(c as u8 - b'0') as usize]).collect::<String>().trim_matches('.').to_string()
+    }
+
     fn shapes(text: &str, body: &str) -> String {
-        let s = speak_text(text, body).unwrap();
-        s.mouth.chars().map(|c| ['.', 'O', 'W', 'U', 'T'][(c as u8 - b'0') as usize]).collect::<String>().trim_matches('.').to_string()
+        letters(&spoken(text, body).take.track)
     }
 
     #[test]
@@ -308,17 +128,38 @@ mod tests {
     }
 
     #[test]
+    fn the_channels_follow_the_shapes() {
+        // "ah" is the most open and least round; "oo" the roundest; "ee" the most spread
+        let max = |s: &str| s.chars().map(|c| c.to_digit(36).unwrap()).max().unwrap();
+        let ah = spoken("ah", "male").take;
+        let oo = spoken("ooh", "male").take;
+        let ee = spoken("eee", "male").take;
+        assert!(max(&ah.open) > max(&oo.open), "open: ah {} oo {}", ah.open, oo.open);
+        assert!(max(oo.round.as_ref().unwrap()) > max(ah.round.as_ref().unwrap()));
+        assert!(max(ee.spread.as_ref().unwrap()) > max(oo.spread.as_ref().unwrap()));
+        // closed where the track rests, and as long as it
+        for t in [&ah, &oo, &ee] {
+            assert_eq!(t.open.len(), t.track.len());
+            for (shape, open) in t.track.chars().zip(t.open.chars()) {
+                if shape == '0' || shape == '4' {
+                    assert_eq!(open, '0');
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_track_frame_covers_each_hundredth_of_the_clip_and_rests_at_both_ends() {
-        let s = speak_text("Hello there.", "female").unwrap();
+        let s = spoken("Hello there.", "female").take;
         assert_eq!(s.pcm.len() % HOP, 0);
-        assert_eq!(s.mouth.len(), s.pcm.len() / HOP);
-        assert!(s.mouth.starts_with("00000") && s.mouth.ends_with("00000"), "{}", s.mouth);
-        assert!(s.mouth.bytes().all(|c| (b'0'..=b'4').contains(&c)));
+        assert_eq!(s.track.len(), s.pcm.len() / HOP);
+        assert!(s.track.starts_with("00000") && s.track.ends_with("00000"), "{}", s.track);
+        assert!(s.track.bytes().all(|c| (b'0'..=b'4').contains(&c)));
     }
 
     #[test]
     fn words_follow_the_whitespace_words_of_the_text() {
-        let s = speak_text("I have 42 apples, don't I?", "male").unwrap();
+        let s = spoken("I have 42 apples, don't I?", "male");
         let w = s.words.unwrap();
         assert_eq!(w.len(), 6, "{w:?}");
         let mut prev = 0.0;
@@ -326,18 +167,18 @@ mod tests {
             assert!(*a >= prev && b > a, "{w:?}");
             prev = *b;
         }
-        assert!(prev <= s.pcm.len() as f64 / FS);
+        assert!(prev <= s.take.duration());
         // "42" says two words, so it lasts longer than "I"
         assert!(w[2][1] - w[2][0] > w[0][1] - w[0][0]);
         // a whitespace word that says nothing can't be timed
-        assert!(speak_text("Wait -- what?", "male").unwrap().words.is_none());
+        assert!(spoken("Wait -- what?", "male").words.is_none());
     }
 
     #[test]
     fn speak_sounds_like_render_text_up_to_the_silent_tail() {
         // the same plan and voice as `render text`, so the same samples until speak cuts the tail
         let text = "Tonight we vote.";
-        let s = speak_text(text, "male").unwrap();
+        let s = spoken(text, "male").take;
         let b = body("male").unwrap();
         let g = g2p().unwrap();
         let phrases = g.to_phrases(text);
@@ -353,5 +194,46 @@ mod tests {
         // what was cut is below -60 dB of the peak
         let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
         assert!(x[s.pcm.len()..].iter().all(|v| v.abs() < peak * 1e-2), "the tail has sound");
+    }
+
+    fn melody(json: &str) -> Melody {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn a_song_lands_its_notes_on_the_beat_and_its_words_on_its_notes() {
+        // 120 bpm: a beat is 0.5 s; the first note's beat is t0 (0.3 s)
+        let m = melody(r#"{ "bpm": 120, "lyrics": "Hel-lo moon", "notes": [[60, 1], [62, 1], [0, 1], [64, 2]] }"#);
+        let s = lipsync::sing(&g2p().unwrap(), &m, "female", FS).unwrap();
+        assert_eq!(s.lead, 0.3);
+        assert_eq!(s.notes, vec![[0.3, 0.8], [0.8, 1.3], [1.8, 2.8]]);
+        let w = s.words.as_ref().unwrap();
+        // "Hel-lo" is one whitespace word over two notes
+        assert_eq!(w, &vec![[0.3, 1.3], [1.8, 2.8]]);
+        // the mouth opens for "moon" and closes between the phrases
+        let track = letters(&s.take.track);
+        assert!(track.contains('U') && track.contains(".........."), "{track}");
+        assert_eq!(s.take.track.len() * HOP, s.take.pcm.len());
+    }
+
+    #[test]
+    fn a_song_refuses_lyrics_that_do_not_fit_its_notes() {
+        let m = melody(r#"{ "bpm": 120, "lyrics": "one two three", "notes": [[60, 1], [62, 1]] }"#);
+        let e = lipsync::sing(&g2p().unwrap(), &m, "male", FS).err().unwrap();
+        assert!(e.contains("3 syllables for 2 notes"), "{e}");
+    }
+
+    #[test]
+    fn every_creature_call_renders_with_a_mouth_that_opens_while_it_sounds() {
+        for (creature, calls) in lipsync::creature_calls() {
+            let c = lipsync::call(creature, Some(calls[0]), FS).unwrap();
+            let t = &c.take;
+            assert_eq!(t.track.len() * HOP, t.pcm.len(), "{creature}");
+            assert!(t.track.bytes().all(|b| b == b'0' || b == b'1'), "{creature}: {}", t.track);
+            assert!(t.track.contains('1'), "{creature} {}: never opens: {}", calls[0], t.track);
+            assert!(t.round.is_none() && t.spread.is_none());
+        }
+        assert!(lipsync::call("dodo", None, FS).is_err());
+        assert!(lipsync::call("seal", Some("moo"), FS).err().unwrap().contains("trill"));
     }
 }
