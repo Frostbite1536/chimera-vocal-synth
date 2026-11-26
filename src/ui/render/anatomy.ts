@@ -155,6 +155,8 @@ export class AnatomyRenderer {
   private gaze = new Gaze();
   /** brows, lids and cheeks, from the voice (the view updates it) */
   readonly face = new Expression();
+  /** the head alone, filling its box: no readouts, no handles, no room kept for them (the choir grid) */
+  bare = false;
 
   constructor() {
     for (let i = 0; i < 170; i++) this.particles.push({ s: Math.random() * 17, u: Math.random() * 2 - 1, life: Math.random(), px: NaN, py: NaN });
@@ -167,15 +169,15 @@ export class AnatomyRenderer {
     // the readouts need room beside the head; a narrow screen (a phone) moves them above and below it.
     // A tall desktop screen keeps them beside it: the head is then fitted to the width and centred,
     // leaving room above and below, where the compact rows ran over the skull.
-    this.compact = w < 560;
-    const padX = 12, padT = this.compact ? 62 : 8, padB = this.compact ? 92 : 8;
+    this.compact = !this.bare && w < 560;
+    const padX = this.bare ? 2 : 12, padT = this.compact ? 62 : this.bare ? 2 : 8, padB = this.compact ? 92 : this.bare ? 2 : 8;
     // VIEW crops the top of the skull at the canvas edge; with readout rows above the head, the
     // whole crown must fit under them, or the cut-off part draws over the readouts
     const y1 = this.compact ? CROWN : VIEW.y1;
     this.scale = Math.max(1, Math.min((w - 2 * padX) / (VIEW.x1 - VIEW.x0), (h - padT - padB) / (y1 - VIEW.y0)));
     // left-aligned when there is room to spare, so the readouts get the space in front of the face
     const spare = w - 2 * padX - (VIEW.x1 - VIEW.x0) * this.scale;
-    this.ox = padX + (this.compact ? spare / 2 : Math.min(spare / 2, Math.max(0, spare - 220))) - VIEW.x0 * this.scale;
+    this.ox = padX + (this.compact || this.bare ? spare / 2 : Math.min(spare / 2, Math.max(0, spare - 220))) - VIEW.x0 * this.scale;
     this.oy = padT + Math.max(0, (h - padT - padB - (y1 - VIEW.y0) * this.scale) / 2) + y1 * this.scale;
     for (const p of this.particles) p.px = NaN;
   }
@@ -324,6 +326,7 @@ export class AnatomyRenderer {
 
     if (tele) this.drawTurbulence(ctx, model, f, tele);
     if (view.calipers) this.drawCalipers(ctx, f);
+    if (this.bare) return;
     this.drawHandles(ctx, model, f, a, opts.hover, opts.drag);
     this.drawReadouts(ctx, opts.formants, opts.info, opts.slots);
   }

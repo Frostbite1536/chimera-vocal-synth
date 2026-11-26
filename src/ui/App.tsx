@@ -26,10 +26,12 @@ import { bodyLabel, presetOf, PRESETS } from "./body.ts";
 const AnatomyView3D = lazy(() => import("./components/AnatomyView3D.tsx").then((m) => ({ default: m.AnatomyView3D })));
 // the duet page (`?show=<id>`): two 3D heads replaying a pre-rendered song
 const DuetPage = lazy(() => import("./components/DuetPage.tsx").then((m) => ({ default: m.DuetPage })));
+// the choir page (`?choir=<id>`): every voice of a pre-rendered song as a small 2D head
+const ChoirPage = lazy(() => import("./components/ChoirPage.tsx").then((m) => ({ default: m.ChoirPage })));
 
 /** the show to play, from `?show=<id>` (a plain folder name under public/shows) */
-function showId(): string | null {
-  const id = new URLSearchParams(window.location.search).get("show");
+function showId(param = "show"): string | null {
+  const id = new URLSearchParams(window.location.search).get(param);
   return id && /^[\w-]+$/.test(id) ? id : null;
 }
 
@@ -207,6 +209,13 @@ function PlayRight() {
 }
 
 export function App() {
+  const choir = showId("choir");
+  if (choir)
+    return (
+      <Suspense fallback={null}>
+        <ChoirPage id={choir} />
+      </Suspense>
+    );
   const show = showId();
   if (show)
     return (
